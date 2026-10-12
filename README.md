@@ -1,3 +1,5 @@
+> **Nota**: questa è la documentazione della bozza iniziale (ESP32 con whitelist locale e relè), ormai superata. Il progetto attuale è descritto in [`SPECIFICHE.md`](SPECIFICHE.md).
+
 # Controllo accessi RFID (2 varchi) con ESP32
 
 Sistema autonomo con whitelist locale per due varchi (pedonale e carrabile),
