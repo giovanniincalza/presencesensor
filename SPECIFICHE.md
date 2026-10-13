@@ -32,12 +32,41 @@ I dati restano esclusivamente in questo sistema.
           \          |            |          /
            ————— rete LAN privata (Wi-Fi WPA2) —————
                           |
-          NAS QNAP TS-873 (Container Station, Docker)
+          NAS QNAP TS-873 — IP fisso 192.168.100.141
+          (Container Station, Docker)
             ├─ container "app": API + pagine web (Python/FastAPI)
             └─ container "db":  PostgreSQL
                           |
-        2 PC in garitta: browser (client live + registri)
+        2 PC in garitta: solo browser (client HTML, nessuna installazione)
 ```
+
+### Vincoli di progetto (non negoziabili)
+
+1. **La parte software è un server che gira in Docker sul NAS QNAP**, con indirizzo
+   **`192.168.100.141`**. L'applicazione e il database sono container; niente da
+   installare direttamente sul NAS al di fuori di Container Station.
+2. **Il client è una pagina HTML** (HTML + CSS + JavaScript puro), **servita dal
+   server stesso** e aperta dal browser all'indirizzo
+   `http://192.168.100.141:<porta>/`. I PC della garitta **non hanno credenziali di
+   amministratore**, quindi il client:
+   - **non richiede nessuna installazione**: niente `.exe`/`.msi`, niente Electron,
+     niente runtime (Java, .NET, Python, Node), niente estensioni del browser, niente
+     driver, niente servizi;
+   - non richiede modifiche alle impostazioni di sistema, ai certificati, al registro
+     o al firewall dei PC;
+   - funziona con i browser già presenti (Edge e Chrome recenti): evitare funzioni
+     sperimentali o non supportate; verificare con **Chromium** e, se possibile, con
+     **Edge**;
+   - usa solo risorse del server (**nessun CDN**, nessun font o script esterno,
+     nessuna chiamata a internet);
+   - non dipende da `localStorage`/cookie persistenti per funzionare: se il browser
+     li blocca, la pagina deve comunque lavorare (sessione con cookie di sessione).
+   La pagina va aperta dal server, **non** da file locale (`file://`): cookie di
+   sessione e SSE richiedono la stessa origine.
+3. **Test in locale su Docker Desktop**, installato sulla stessa macchina di
+   sviluppo. Lo stesso `docker-compose.yml` deve poter girare identico su Docker
+   Desktop e sul NAS, cambiando solo un file di configurazione (§8). Niente prove che
+   richiedano il NAS reale per verificare la logica.
 
 - 4 lettori fissi, uno per punto di lettura. **La direzione è decisa
   dall'hardware** (ogni lettore ha un ID e sa se è entrata o uscita, pedonale o
@@ -53,9 +82,9 @@ I dati restano esclusivamente in questo sistema.
 | Server | Python 3.12, FastAPI, SQLAlchemy, Alembic (migrazioni) |
 | Database | PostgreSQL 16 (container separato, volume persistente) |
 | Tempo reale | Server-Sent Events (SSE) con `Last-Event-ID` per recuperare gli eventi persi |
-| Frontend | HTML + JavaScript semplice, nessun passo di build, **nessuna dipendenza da CDN o internet** (rete privata) |
+| Frontend | **Client HTML**: HTML + JavaScript semplice, servito dal server, nessun passo di build, **nessuna dipendenza da CDN o internet** (rete privata), nessuna installazione sui PC (vedi vincoli sopra) |
 | Stampa | CSS `@media print` e stampa del browser (PDF dal browser); esportazione CSV |
-| Deploy | `docker-compose.yml` per Container Station (il TS-873 è x86_64: immagini `amd64`) |
+| Deploy | Container Docker sul NAS `192.168.100.141` via Container Station (il TS-873 è x86_64: immagini `amd64`); test su Docker Desktop in locale |
 | Firmware | PlatformIO, framework Arduino, ESP32, libreria Adafruit PN532 |
 
 ## 3. Fatti verificati sull'hardware
@@ -233,17 +262,43 @@ Un firmware unico per i 4 lettori, identità e parametri in configurazione
   Wi-Fi manca a lungo.
 - Isolare la logica pura (formattazione UID, coda, backoff) in codice testabile
   su PC senza hardware.
-- **Limite dell'ambiente di sviluppo cloud**: il registro di PlatformIO è bloccato
-  dalla rete, quindi **il firmware non si può compilare lì**. Tenerlo semplice e
-  indicare chiaramente nel README cosa non è stato compilato/provato su hardware.
+- **Verifica del firmware**: se la sessione di sviluppo gira in un ambiente senza
+  accesso al registro di PlatformIO (nell'ambiente cloud usato per la fase di
+  progettazione era bloccato), **il firmware non si può compilare lì**: tenerlo
+  semplice e indicare chiaramente nel README cosa non è stato compilato o provato
+  su hardware. Sulla macchina locale con accesso a internet va compilato con
+  `pio run` prima di dichiararlo pronto.
+- Il lettore comunica con il server all'indirizzo `192.168.100.141` e porta
+  configurata, **non** con un nome DNS (la rete privata potrebbe non averlo).
 
 ## 8. Distribuzione sul NAS (QNAP TS-873, Container Station)
 
+- **Indirizzo del server in produzione: `192.168.100.141`** (IP fisso del NAS). I
+  quattro lettori puntano a `http://192.168.100.141:<porta>`; il NAS fa anche da
+  server NTP per i lettori (da abilitare in QTS).
 - `docker-compose.yml` con servizi `db`, `app` e (opzionale) `backup`, volumi
-  persistenti per database, foto e backup, **riavvio automatico**.
+  **named** (non percorsi dell'host) per database, foto e backup, **riavvio automatico**.
+- **Porta dell'app**: non usare `8080` (è la porta predefinita dell'interfaccia
+  web di QTS sul NAS). Default proposto `8088`, configurabile; verificare che sia
+  libera sul NAS.
 - Variabili d'ambiente per segreti e configurazione (`.env.example` senza valori reali).
-- Porta dell'app configurabile; istruzioni per l'indirizzo fisso e per l'NTP
-  del NAS verso i lettori.
+- **Due modalità, stesso compose**:
+  - *Produzione (NAS)*: `docker compose up -d` con `.env` di produzione; l'app
+    risponde su `192.168.100.141:<porta>`.
+  - *Sviluppo e prova (Docker Desktop)*: `docker compose -f docker-compose.yml
+    -f docker-compose.dev.yml up --build`; l'app risponde su
+    `http://localhost:<porta>`; dati di prova e simulatore dei lettori puntano a
+    `localhost`. Il file `docker-compose.dev.yml` contiene solo le differenze
+    (porte, credenziali di prova, dati dimostrativi).
+- **Compatibilità**: immagini `linux/amd64` (il NAS è x86_64). Se la macchina di
+  sviluppo è ARM (Apple Silicon), costruire per `linux/amd64` con `buildx`. File
+  di script e configurazione con fine riga **LF** (non CRLF) anche se sviluppati
+  su Windows; nessun percorso specifico del sistema operativo host.
+- **Il NAS potrebbe non avere accesso a internet**: documentare il caso in cui le
+  immagini si costruiscono sulla macchina di sviluppo e si trasferiscono al NAS
+  (`docker save` → importazione in Container Station) oltre al caso in cui il NAS
+  le scarica da solo. Lo stesso per gli aggiornamenti.
+- Istruzioni per l'indirizzo fisso del NAS e per l'NTP verso i lettori.
 - README con installazione passo-passo in Container Station, aggiornamento,
   backup/ripristino e creazione dell'admin iniziale.
 - Fuso orario `Europe/Rome` ovunque, timestamp salvati in UTC o con offset.
@@ -251,10 +306,12 @@ Un firmware unico per i 4 lettori, identità e parametri in configurazione
 ## 9. Struttura del repository proposta
 
 ```
-server/            applicazione FastAPI, migrazioni, test
-  app/ static/ templates/ tests/
+server/            applicazione FastAPI, migrazioni, test, Dockerfile
+  app/ static/ templates/ tests/     (static/: client HTML, JS, CSS, nessun CDN)
 firmware/          progetto PlatformIO del lettore
-docker-compose.yml
+tools/             simulatore dei 4 lettori, dati di prova
+docker-compose.yml          produzione (NAS 192.168.100.141)
+docker-compose.dev.yml      differenze per Docker Desktop in locale
 .env.example
 docs/              installazione, backup, privacy, cablaggio lettore
 SPECIFICHE.md      questo documento
@@ -267,9 +324,13 @@ Rimuovere dal repo la bozza precedente (`src/`, `include/`, `platformio.ini`,
 - Test automatici del server: conversione UID, API eventi (idempotenza,
   duplicati, tessera sconosciuta, ora non affidabile), presenti, filtri dei
   registri, import CSV, permessi per ruolo.
-- Prova della vista live e della stampa con **Chromium/Playwright** (disponibile
-  nell'ambiente cloud, non scaricare altri browser) con dati simulati,
-  controllando layout, schermata di allarme e stampa A4.
+- **Tutti i test si eseguono su Docker Desktop in locale** con
+  `docker-compose.dev.yml`, senza toccare il NAS. Prima del rilascio una prova di
+  installazione e avvio su **Container Station** del NAS `192.168.100.141`.
+- Prova della vista live e della stampa con **Chromium/Playwright** (dove già
+  disponibile, senza scaricare altri browser) con dati simulati, controllando
+  layout, schermata di allarme e stampa A4. Verificare che la pagina funzioni
+  senza accesso a internet e senza chiamate a domini esterni.
 - Script di **simulazione dei 4 lettori** che inviano eventi all'API, per
   provare il sistema senza hardware.
 - Dati di prova con persone e foto fittizie; **nessun dato reale nel repo**.
@@ -280,9 +341,12 @@ Rimuovere dal repo la bozza precedente (`src/`, `include/`, `platformio.ini`,
 2. Autenticazione e ruoli, anagrafica, import CSV, foto.
 3. Vista live (SSE), allarme tessera sconosciuta, "ancora presenti".
 4. Registri, stampa A4, esportazione CSV, audit.
-5. Docker Compose, backup, documentazione di installazione.
-6. Firmware del lettore (coda offline, OTA, configurazione), con prova su banco.
-7. Prova su due lettori reali, poi i quattro varchi.
+5. Docker Compose (produzione e sviluppo), prova completa su Docker Desktop,
+   backup, documentazione di installazione.
+6. Installazione di prova su Container Station del NAS `192.168.100.141` e prova
+   del client dai PC della garitta **con account non amministratore**.
+7. Firmware del lettore (coda offline, OTA, configurazione), con prova su banco.
+8. Prova su due lettori reali, poi i quattro varchi.
 
 ## 12. Punti aperti, da chiedere al cliente quando serve
 
